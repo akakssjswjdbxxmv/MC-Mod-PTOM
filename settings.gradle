@@ -1,0 +1,14 @@
+pluginManagement {
+	repositories {
+		maven { url "https://maven.aliyun.com/repository/gradle-plugin" }
+		maven { url "https://maven.aliyun.com/repository/public" }
+		// 用BMCLAPI替代官方fabricmc镜像，国内加速！Loom插件从这里下载
+		maven { url "https://bmclapi2.bangbang93.com/maven/" }
+		maven {
+			name = 'Fabric'
+			url = 'https://maven.fabricmc.net/'
+		}
+		mavenCentral()
+		gradlePluginPortal()
+	}
+}
