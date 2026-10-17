@@ -18,17 +18,27 @@ public final class MaterialConfigGui extends GuiConfigsBase {
             new ConfigBoolean("temp1792221464.config.hud_enabled", true, "temp1792221464.config.hud_enabled.comment");
     private static final ConfigInteger HUD_TOP_N =
             new ConfigInteger("temp1792221464.config.hud_top_n", 5, 1, 15, "temp1792221464.config.hud_top_n.comment");
+    private static final ConfigInteger HUD_ANCHOR =
+            new ConfigInteger("temp1792221464.config.hud_anchor", 0, 0, 3, "temp1792221464.config.hud_anchor.comment");
+    private static final ConfigInteger HUD_OFFSET_X =
+            new ConfigInteger("temp1792221464.config.hud_offset_x", 0, 0, 200, "temp1792221464.config.hud_offset_x.comment");
+    private static final ConfigInteger HUD_OFFSET_Y =
+            new ConfigInteger("temp1792221464.config.hud_offset_y", 0, 0, 200, "temp1792221464.config.hud_offset_y.comment");
 
     public MaterialConfigGui() {
         super(10, 36, Temp1792221464.MOD_ID, null, "temp1792221464.gui.title.configs");
         // 主界面 / HUD / 快捷键可能在本 GUI 之外改过配置，打开时同步为当前值
         HUD_ENABLED.setBooleanValue(MaterialConfig.isHudEnabled());
         HUD_TOP_N.setIntegerValue(MaterialConfig.getHudTopN());
+        HUD_ANCHOR.setIntegerValue(MaterialConfig.getHudAnchor().ordinal());
+        HUD_OFFSET_X.setIntegerValue(MaterialConfig.getHudOffsetX());
+        HUD_OFFSET_Y.setIntegerValue(MaterialConfig.getHudOffsetY());
     }
 
     @Override
     public List<ConfigOptionWrapper> getConfigs() {
-        return ConfigOptionWrapper.createFor(List.of(HUD_ENABLED, HUD_TOP_N, MaterialHotkeys.OPEN_GUI));
+        return ConfigOptionWrapper.createFor(List.of(
+                HUD_ENABLED, HUD_TOP_N, HUD_ANCHOR, HUD_OFFSET_X, HUD_OFFSET_Y, MaterialHotkeys.OPEN_GUI));
     }
 
     @Override
@@ -41,5 +51,8 @@ public final class MaterialConfigGui extends GuiConfigsBase {
         super.onSettingsChanged();
         MaterialConfig.setHudEnabled(HUD_ENABLED.getBooleanValue());
         MaterialConfig.setHudTopN(HUD_TOP_N.getIntegerValue());
+        MaterialConfig.setHudAnchor(MaterialConfig.HudAnchor.values()[HUD_ANCHOR.getIntegerValue()]);
+        MaterialConfig.setHudOffsetX(HUD_OFFSET_X.getIntegerValue());
+        MaterialConfig.setHudOffsetY(HUD_OFFSET_Y.getIntegerValue());
     }
 }

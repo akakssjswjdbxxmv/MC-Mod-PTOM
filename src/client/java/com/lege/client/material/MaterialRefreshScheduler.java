@@ -1,9 +1,6 @@
 package com.lege.client.material;
 
 import com.lege.Temp1792221464;
-import fi.dy.masa.litematica.data.DataManager;
-import fi.dy.masa.litematica.materials.MaterialListBase;
-import fi.dy.masa.litematica.materials.MaterialListUtils;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.minecraft.client.Minecraft;
@@ -14,8 +11,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * 材料列表刷新调度器（单例）。
- * 仅使用 A 类接口 updateAvailableCounts 刷新背包已有数，
- * 不触发建造进度重算，避免大投影卡顿。
+ * 数据源为 MaterialSession（自行解析的投影文件），仅使用 A 类接口
+ * updateAvailableCounts 刷新背包已有数，不触发建造进度重算，避免大投影卡顿。
  * 所有操作在客户端主线程（tick 回调）中执行。
  */
 public final class MaterialRefreshScheduler {
@@ -65,6 +62,8 @@ public final class MaterialRefreshScheduler {
     private void stop() {
         // 仅停止刷新；监听器是持久订阅者（如 HUD），清空会导致重进世界后永久失效
         this.running = false;
+        // 世界断开后会话随之失效（背包统计依赖玩家），清理避免残留过期数据
+        MaterialSession.getInstance().close();
     }
 
     private void onClientTick() {
@@ -85,21 +84,31 @@ public final class MaterialRefreshScheduler {
         }
     }
 
-    /** 立即刷新一次并推送（主线程调用，供忽略列表等配置变更后即时生效） */
+    /** 忽略列表等过滤条件变更后：重拍快照并立即推送（主线程调用） */
     public void refreshNow() {
         try {
-            refresh();
+            MaterialSession session = MaterialSession.getInstance();
+            session.refreshSnapshot();
+            push(session.getSnapshot());
         } catch (Exception e) {
             Temp1792221464.LOGGER.error("材料列表立即刷新失败", e);
         }
     }
 
-    private void refresh() {
-        MaterialListBase materialList = DataManager.getMaterialList();
-        Player player = Minecraft.getInstance().player;
+    /** 文件打开 / 关闭后立即推送当前快照（主线程调用） */
+    public void notifyNow() {
+        try {
+            push(MaterialSession.getInstance().getSnapshot());
+        } catch (Exception e) {
+            Temp1792221464.LOGGER.error("材料快照推送失败", e);
+        }
+    }
 
-        // 卸载投影后 litematica 仍会残留列表，需校验来源有效性
-        if (materialList == null || player == null || !MaterialDataBridge.isCurrentValid()) {
+    private void refresh() {
+        Player player = Minecraft.getInstance().player;
+        MaterialSession session = MaterialSession.getInstance();
+
+        if (player == null || !session.hasOpenFile()) {
             // 从"有材料列表"变为"无"，通知一次空快照
             if (this.hadMaterialList) {
                 this.hadMaterialList = false;
@@ -108,11 +117,9 @@ public final class MaterialRefreshScheduler {
             return;
         }
 
-        // A 类刷新链路：更新背包已有数 → 重算聚合统计 → 拷贝快照
-        MaterialListUtils.updateAvailableCounts(materialList.getMaterialsAll(), player);
-        materialList.updateCounts();
-
-        MaterialListSnapshot snapshot = MaterialDataBridge.readCurrent();
+        // A 类刷新链路：更新背包已有数 → 重拍快照
+        session.refreshAvailable(player);
+        MaterialListSnapshot snapshot = session.getSnapshot();
         long hash = computeHash(snapshot);
 
         if (hash != this.lastSnapshotHash || !this.hadMaterialList) {
@@ -120,6 +127,13 @@ public final class MaterialRefreshScheduler {
             this.hadMaterialList = true;
             notifyListeners(snapshot);
         }
+    }
+
+    /** 直接推送一份快照（跳过周期与变化检测） */
+    private void push(MaterialListSnapshot snapshot) {
+        this.lastSnapshotHash = computeHash(snapshot);
+        this.hadMaterialList = snapshot.hasMaterialList();
+        notifyListeners(snapshot);
     }
 
     /** 轻量变化检测 hash：仅看条目数与背包已有数总和 */

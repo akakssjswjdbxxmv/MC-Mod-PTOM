@@ -36,22 +36,19 @@ public final class MaterialCountFormatter {
     private static String formatShulkers(long count, int stackSize) {
         long boxSize = (long) stackSize * GROUPS_PER_BOX;
         long boxes = count / boxSize;
-        long rem = count % boxSize;
+        long groups = count % boxSize / stackSize;
+        long individual = count % stackSize;
 
         StringBuilder sb = new StringBuilder();
         if (boxes > 0) {
             sb.append(boxes).append("盒");
         }
-        if (rem > 0) {
-            long groups = rem / stackSize;
-            long individual = rem % stackSize;
-            if (groups > 0) {
-                sb.append(sb.length() > 0 ? "+" : "").append(groups).append("组");
-            }
-            if (individual > 0) {
-                sb.append(sb.length() > 0 ? "+" : "").append(individual).append("个");
-            }
+        if (groups > 0) {
+            sb.append(sb.isEmpty() ? "" : "+").append(groups).append("组");
         }
-        return sb.length() > 0 ? sb.toString() : "0个";
+        if (individual > 0) {
+            sb.append(sb.isEmpty() ? "" : "+").append(individual).append("个");
+        }
+        return sb.isEmpty() ? "0个" : sb.toString();
     }
 }

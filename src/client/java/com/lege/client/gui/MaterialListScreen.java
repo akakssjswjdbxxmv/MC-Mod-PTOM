@@ -3,11 +3,11 @@ package com.lege.client.gui;
 import com.lege.client.config.MaterialConfig;
 import com.lege.client.material.MaterialBreakdownCalculator;
 import com.lege.client.material.MaterialCountFormatter;
-import com.lege.client.material.MaterialDataBridge;
 import com.lege.client.material.MaterialEntrySnapshot;
 import com.lege.client.material.MaterialHudRenderer;
 import com.lege.client.material.MaterialListSnapshot;
 import com.lege.client.material.MaterialRefreshScheduler;
+import com.lege.client.material.MaterialSession;
 import com.lege.client.material.MaterialSnapshotListener;
 import com.lege.client.material.MaterialStatistics;
 import com.lege.client.material.MaterialStatisticsCalculator;
@@ -16,12 +16,15 @@ import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 模组主界面：材料统计汇总 + 完整材料列表 + HUD 设置。
@@ -45,19 +48,11 @@ public final class MaterialListScreen extends Screen implements MaterialSnapshot
     private static final int COL_OWNED = 85;
     private static final int COL_MISSING = 40;
 
-    private static final int SCROLLBAR_WIDTH = 6;
-    private static final int SCROLLBAR_MIN_SLIDER = 20;
-
     private volatile MaterialListSnapshot snapshot;
-    private int scrollOffset;
-    /** 滚动条拖拽状态与每帧缓存的列表几何信息（render 先于鼠标事件执行） */
-    private boolean scrollbarDragging;
-    private double dragGrabOffset;
-    private int cachedTrackTop;
-    private int cachedTrackHeight;
-    private int cachedMaxScroll;
+    /** 滚动条组件：托管滚动位置与轨道几何（SRP，可复用） */
+    private final Scrollbar scrollbar = new Scrollbar();
 
-    /** 显示视图：材料明细 / 原材料汇总 */
+    /** 显示视图：材料明细 / 直接材料汇总 */
     private enum ViewMode { MATERIALS, INGREDIENTS }
 
     private ViewMode viewMode = ViewMode.MATERIALS;
@@ -66,25 +61,18 @@ public final class MaterialListScreen extends Screen implements MaterialSnapshot
     /** 清除忽略按钮：render 中按忽略数量更新文本与可用状态 */
     private Button clearIgnoredButton;
 
-    /** 已展开原材料明细的材料条目及其分解结果 */
-    private ResourceLocation expandedItemId;
-    private List<MaterialBreakdownCalculator.BreakdownEntry> expandedParts = List.of();
-    /** 每帧重建的展示行（材料行 + 展开的原料行），供点击命中使用 */
-    private List<Row> displayRows = List.of();
+    /** 逐级展开树：托管展开状态与展示行构建 */
+    private final MaterialExpansionTree expansion = new MaterialExpansionTree();
+    /** 每帧重建的展示行（材料行 + 展开的直接材料行），供点击命中使用 */
+    private List<MaterialExpansionTree.Row> displayRows = List.of();
 
-    /** 展示行：材料行或其展开的原材料行 */
-    private sealed interface Row permits MaterialRow, IngredientRow {
-    }
-
-    private record MaterialRow(MaterialEntrySnapshot entry) implements Row {
-    }
-
-    private record IngredientRow(MaterialBreakdownCalculator.BreakdownEntry entry) implements Row {
-    }
+    /** 固定排序：条目集合指纹与对应的物品 id 顺序（缺口变化不再触发重排） */
+    private long sortedFingerprint = Long.MIN_VALUE;
+    private List<ResourceLocation> sortedOrder = List.of();
 
     public MaterialListScreen() {
         super(Component.translatable("gui.temp1792221464.material_list.title"));
-        this.snapshot = MaterialDataBridge.readCurrent();
+        this.snapshot = MaterialSession.getInstance().getSnapshot();
     }
 
     @Override
@@ -118,7 +106,15 @@ public final class MaterialListScreen extends Screen implements MaterialSnapshot
         addRenderableWidget(Button.builder(Component.translatable("gui.done"), b -> onClose())
                 .bounds(this.width - MARGIN - 60, y, 60, 20).build());
 
-        // 视图切换（材料明细 / 原材料汇总）+ 清除忽略，放顶部统计区右侧
+        // 浏览文件：返回文件浏览器重新选择投影
+        addRenderableWidget(Button.builder(
+                Component.translatable("gui.temp1792221464.material_list.browse"), b -> {
+                    if (this.minecraft != null) {
+                        this.minecraft.setScreen(new SchematicBrowserScreen());
+                    }
+                }).bounds(this.width - 256, MARGIN + 8, 80, 18).build());
+
+        // 视图切换（材料明细 / 直接材料汇总）+ 清除忽略，放顶部统计区右侧
         Button viewButton = Button.builder(viewLabel(), b -> {
             this.viewMode = this.viewMode == ViewMode.MATERIALS ? ViewMode.INGREDIENTS : ViewMode.MATERIALS;
             b.setMessage(viewLabel());
@@ -179,6 +175,12 @@ public final class MaterialListScreen extends Screen implements MaterialSnapshot
             String progress = String.format("%s: %.1f%% (%d/%d)",
                     Component.translatable("gui.temp1792221464.material_list.progress").getString(),
                     stats.progressPercent(), stats.countAvailable(), stats.countTotal());
+            // 进度后标注来源文件名，明确当前材料列表来自哪个投影文件
+            String fileName = MaterialSession.getInstance().getCurrentFileName();
+            if (fileName != null) {
+                progress += "  -  " + fileName;
+            }
+            progress = this.font.plainSubstrByWidth(progress, this.width - 256 - MARGIN * 2);
             graphics.drawString(this.font, progress, MARGIN, MARGIN + 14, 0xFFFFFF, true);
 
             if (this.viewMode == ViewMode.INGREDIENTS) {
@@ -214,79 +216,100 @@ public final class MaterialListScreen extends Screen implements MaterialSnapshot
         drawRight(graphics, Component.translatable("gui.temp1792221464.material_list.header_missing").getString(),
                 this.width - COL_MISSING, listTop, 0xFFFF55);
 
-        List<Row> rows = buildDisplayRows(snap);
+        List<MaterialExpansionTree.Row> rows = this.expansion.buildRows(sortedEntries(snap), this.minecraft);
         this.displayRows = rows;
         renderScrollFrame(graphics, listTop, listBottom, rows.size(), (g, i, y) -> renderRow(g, rows.get(i), y));
     }
 
-    /** 材料行 + 已展开条目的原材料子行 */
-    private List<Row> buildDisplayRows(MaterialListSnapshot snap) {
-        List<Row> rows = new ArrayList<>();
-        for (MaterialEntrySnapshot entry : sortedEntries(snap)) {
-            rows.add(new MaterialRow(entry));
-            if (entry.itemId().equals(this.expandedItemId)) {
-                for (MaterialBreakdownCalculator.BreakdownEntry part : this.expandedParts) {
-                    rows.add(new IngredientRow(part));
-                }
-            }
-        }
-        return rows;
-    }
-
-    private void renderRow(GuiGraphics graphics, Row row, int y) {
-        if (row instanceof MaterialRow material) {
-            renderMaterialRow(graphics, material.entry(), y);
-        } else if (row instanceof IngredientRow ingredient) {
-            renderIngredientRow(graphics, ingredient.entry(), y);
+    private void renderRow(GuiGraphics graphics, MaterialExpansionTree.Row row, int y) {
+        if (row instanceof MaterialExpansionTree.MaterialRow material) {
+            renderMaterialRow(graphics, material, y);
+        } else if (row instanceof MaterialExpansionTree.IngredientRow ingredient) {
+            renderIngredientRow(graphics, ingredient, y);
         }
     }
 
-    private void renderMaterialRow(GuiGraphics graphics, MaterialEntrySnapshot entry, int y) {
+    private void renderMaterialRow(GuiGraphics graphics, MaterialExpansionTree.MaterialRow row, int y) {
+        MaterialEntrySnapshot entry = row.entry();
         // 隔行底色，提高可读性
         if (y / ROW_HEIGHT % 2 == 0) {
             graphics.fill(MARGIN, y, this.width - MARGIN, y + ROW_HEIGHT, 0x30FFFFFF);
         }
 
         graphics.renderItem(entry.stack(), MARGIN, y + 1);
-        boolean expanded = entry.itemId().equals(this.expandedItemId);
-        // 名称 + 展开/收起指示符
-        String name = entry.stack().getHoverName().getString() + (expanded ? " ▾" : " ▸");
+        // 名称 + 展开/收起指示符（仅存在直接合成材料的行显示）
+        String name = entry.stack().getHoverName().getString();
+        if (row.expandable()) {
+            name += this.expansion.isExpanded(entry.itemId()) ? " ▾" : " ▸";
+        }
         graphics.drawString(this.font, this.font.plainSubstrByWidth(name, this.width - COL_TOTAL - MARGIN - 28),
                 MARGIN + 20, y + 5, 0xFFFFFF, true);
 
-        // 数量按当前计数模式显示（个数 / 组数 / 盒数优先），缺少 > 0 红色突出
+        // 数量按当前计数模式显示（个数 / 组数 / 盒数优先）；已有数按足够绿 / 不足橙标注，缺少 > 0 红色突出
         var mode = MaterialConfig.getDisplayMode();
         int stackSize = entry.stack().getMaxStackSize();
         drawRight(graphics, MaterialCountFormatter.format(entry.total(), mode, stackSize),
                 this.width - COL_REQUIRED, y + 5);
         drawRight(graphics, MaterialCountFormatter.format(entry.available(), mode, stackSize),
-                this.width - COL_OWNED, y + 5);
+                this.width - COL_OWNED, y + 5, entry.available() >= entry.total() ? 0x55FF55 : 0xFFAA00);
         long missing = entry.missing();
         drawRight(graphics, MaterialCountFormatter.format(missing, mode, stackSize),
                 this.width - COL_MISSING, y + 5, missing > 0 ? 0xFF7777 : 0x777777);
     }
 
-    /** 展开的原材料行：缩进渲染 */
-    private void renderIngredientRow(GuiGraphics graphics, MaterialBreakdownCalculator.BreakdownEntry entry, int y) {
-        graphics.renderItem(entry.stack(), MARGIN + 12, y + 1);
+    /** 展开的直接材料行：按层级缩进渲染，有配方的行带展开指示符 */
+    private void renderIngredientRow(GuiGraphics graphics, MaterialExpansionTree.IngredientRow row, int y) {
+        MaterialBreakdownCalculator.BreakdownEntry entry = row.entry();
+        int iconX = MARGIN + 12 * row.level();
+        graphics.renderItem(entry.stack(), iconX, y + 1);
         String name = entry.stack().getHoverName().getString();
-        graphics.drawString(this.font, this.font.plainSubstrByWidth(name, this.width - COL_AVAILABLE - MARGIN - 40),
-                MARGIN + 32, y + 5, 0xCCCCCC, true);
+        if (row.expandable()) {
+            ResourceLocation partId = BuiltInRegistries.ITEM.getKey(entry.stack().getItem());
+            name += this.expansion.isExpanded(partId) ? " ▾" : " ▸";
+        }
+        int nameX = iconX + 20;
+        graphics.drawString(this.font, this.font.plainSubstrByWidth(name, this.width - COL_AVAILABLE - nameX - 8),
+                nameX, y + 5, 0xCCCCCC, true);
         drawRight(graphics, MaterialCountFormatter.format(entry.totalRequired(),
                         MaterialConfig.getDisplayMode(), entry.stack().getMaxStackSize()),
                 this.width - COL_AVAILABLE, y + 5, 0xCCCCCC);
     }
 
-    /** 全量条目按建造缺失降序，其次按物品名 */
-    private static List<MaterialEntrySnapshot> sortedEntries(MaterialListSnapshot snap) {
-        List<MaterialEntrySnapshot> rows = new ArrayList<>(snap.entries());
-        rows.sort(Comparator
-                .comparingInt(MaterialEntrySnapshot::missing).reversed()
-                .thenComparing(e -> e.itemId().toString()));
+    /**
+     * 全量条目排序：条目集合变化（打开新文件 / 忽略列表变更）时按建造缺失降序排一次并固定，
+     * 之后缺口变化只更新数字与颜色（已有列绿 / 橙标注），条目位置不再跳动
+     */
+    private List<MaterialEntrySnapshot> sortedEntries(MaterialListSnapshot snap) {
+        // 条目集合指纹：仅与物品 id 集合相关，与数量无关
+        long fingerprint = 31L * snap.entries().size();
+        for (MaterialEntrySnapshot entry : snap.entries()) {
+            fingerprint += entry.itemId().hashCode();
+        }
+        if (fingerprint != this.sortedFingerprint) {
+            List<MaterialEntrySnapshot> sorted = new ArrayList<>(snap.entries());
+            sorted.sort(Comparator.comparingInt(MaterialEntrySnapshot::missing).reversed()
+                    .thenComparing(e -> e.itemId().toString()));
+            this.sortedOrder = sorted.stream().map(MaterialEntrySnapshot::itemId).toList();
+            this.sortedFingerprint = fingerprint;
+        }
+        // 按固定顺序映射当前快照条目（快照对象随刷新重建，但 id 顺序不变）
+        Map<ResourceLocation, MaterialEntrySnapshot> byId = new HashMap<>();
+        for (MaterialEntrySnapshot entry : snap.entries()) {
+            byId.put(entry.itemId(), entry);
+        }
+        List<MaterialEntrySnapshot> rows = new ArrayList<>(byId.size());
+        for (ResourceLocation id : this.sortedOrder) {
+            MaterialEntrySnapshot entry = byId.remove(id);
+            if (entry != null) {
+                rows.add(entry);
+            }
+        }
+        // 防御：顺序表之外的残留条目追加在末尾
+        rows.addAll(byId.values());
         return rows;
     }
 
-    /** 原材料汇总视图：成品经配方递归分解后的基础材料总量 */
+    /** 直接材料汇总视图：成品配方一层分解后的直接合成材料总量 */
     private void renderBreakdownList(GuiGraphics graphics, int listTop, int listBottom) {
         graphics.drawString(this.font, Component.translatable("gui.temp1792221464.material_list.header_name").getString(),
                 MARGIN + 20, listTop, 0xFFFF55, true);
@@ -297,17 +320,16 @@ public final class MaterialListScreen extends Screen implements MaterialSnapshot
         renderScrollFrame(graphics, listTop, listBottom, rows.size(), (g, i, y) -> renderBreakdownRow(g, rows.get(i), y));
     }
 
-    /** 滚动帧：裁剪 + 行绘制 + 几何缓存 + 滚动条，供各视图共用 */
+    /** 滚动帧：裁剪 + 行绘制 + 滚动条，供各视图共用 */
     private void renderScrollFrame(GuiGraphics graphics, int listTop, int listBottom, int rowCount, RowDrawer drawer) {
         int headerBottom = listTop + LIST_HEADER_HEIGHT;
         graphics.enableScissor(0, headerBottom, this.width, listBottom);
 
         int viewHeight = listBottom - headerBottom;
-        int maxScroll = Math.max(0, rowCount * ROW_HEIGHT - viewHeight);
-        this.scrollOffset = Math.min(this.scrollOffset, maxScroll);
+        this.scrollbar.beginFrame(headerBottom, viewHeight, Math.max(0, rowCount * ROW_HEIGHT - viewHeight));
 
         for (int i = 0; i < rowCount; i++) {
-            int y = headerBottom + i * ROW_HEIGHT - this.scrollOffset;
+            int y = headerBottom + i * ROW_HEIGHT - this.scrollbar.scrollOffset();
             if (y + ROW_HEIGHT < headerBottom || y > listBottom) {
                 continue;
             }
@@ -315,13 +337,7 @@ public final class MaterialListScreen extends Screen implements MaterialSnapshot
         }
 
         graphics.disableScissor();
-
-        this.cachedTrackTop = headerBottom;
-        this.cachedTrackHeight = viewHeight;
-        this.cachedMaxScroll = maxScroll;
-        if (maxScroll > 0) {
-            renderScrollbar(graphics, headerBottom, listBottom, viewHeight, maxScroll);
-        }
+        this.scrollbar.render(graphics, this.scrollbar.trackX(this.width));
     }
 
     @FunctionalInterface
@@ -329,86 +345,45 @@ public final class MaterialListScreen extends Screen implements MaterialSnapshot
         void draw(GuiGraphics graphics, int index, int y);
     }
 
-    /** 轨道 + 滑块，滑块高度按可视比例，位置按滚动比例 */
-    private void renderScrollbar(GuiGraphics graphics, int top, int bottom, int viewHeight, int maxScroll) {
-        int trackX = this.width - SCROLLBAR_WIDTH - 2;
-        graphics.fill(trackX, top, trackX + SCROLLBAR_WIDTH, bottom, 0x40000000);
-
-        int sliderHeight = sliderHeight(viewHeight, maxScroll);
-        int sliderY = top + (bottom - top - sliderHeight) * this.scrollOffset / maxScroll;
-        int color = this.scrollbarDragging ? 0xF0F0F0 : 0x80FFFFFF;
-        graphics.fill(trackX, sliderY, trackX + SCROLLBAR_WIDTH, sliderY + sliderHeight, color);
-    }
-
-    private static int sliderHeight(int viewHeight, int maxScroll) {
-        return Math.max(SCROLLBAR_MIN_SLIDER, viewHeight * viewHeight / (viewHeight + maxScroll));
-    }
-
-    /** 点击轨道：落在滑块上开始拖拽，否则向点击方向翻一页；点击行切换原材料展开 */
+    /** 滚动条点击交给组件处理；列表视图下行点击：左键展开原材料，右键忽略该物品 */
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        if (button == 0 && this.cachedMaxScroll > 0
-                && mouseX >= this.width - SCROLLBAR_WIDTH - 2 && mouseX <= this.width - 2
-                && mouseY >= this.cachedTrackTop && mouseY <= this.cachedTrackTop + this.cachedTrackHeight) {
-            int sliderHeight = sliderHeight(this.cachedTrackHeight, this.cachedMaxScroll);
-            int sliderY = this.cachedTrackTop
-                    + (this.cachedTrackHeight - sliderHeight) * this.scrollOffset / this.cachedMaxScroll;
-            if (mouseY >= sliderY && mouseY <= sliderY + sliderHeight) {
-                this.scrollbarDragging = true;
-                this.dragGrabOffset = mouseY - sliderY;
-            } else {
-                int page = mouseY < sliderY ? -this.cachedTrackHeight : this.cachedTrackHeight;
-                this.scrollOffset = clampScroll(this.scrollOffset + page, this.cachedMaxScroll);
-            }
+        int trackX = this.scrollbar.trackX(this.width);
+        if (this.scrollbar.mouseClicked(mouseX, mouseY, button, trackX)) {
             return true;
         }
-        // 材料列表视图下的行点击：左键展开原材料，右键忽略该物品
         if (button == 0 || button == 1) {
-            boolean inListArea = mouseY >= this.cachedTrackTop
-                    && mouseY < this.cachedTrackTop + this.cachedTrackHeight
-                    && (button == 1 || mouseX < this.width - SCROLLBAR_WIDTH - 2);
+            boolean inListArea = this.scrollbar.inViewArea(mouseY) && (button == 1 || mouseX < trackX);
             if (this.viewMode == ViewMode.MATERIALS && inListArea) {
-                int index = (int) ((mouseY - this.cachedTrackTop + this.scrollOffset) / ROW_HEIGHT);
-                if (index >= 0 && index < this.displayRows.size()
-                        && this.displayRows.get(index) instanceof MaterialRow material) {
-                    if (button == 0) {
-                        toggleExpanded(material.entry());
-                    } else {
-                        MaterialConfig.addIgnoredItem(material.entry().itemId().toString());
-                        // 立即刷新快照，忽略的物品马上从列表消失
-                        MaterialRefreshScheduler.getInstance().refreshNow();
+                int index = (int) ((mouseY - this.scrollbar.trackTop() + this.scrollbar.scrollOffset()) / ROW_HEIGHT);
+                if (index >= 0 && index < this.displayRows.size()) {
+                    MaterialExpansionTree.Row row = this.displayRows.get(index);
+                    if (row instanceof MaterialExpansionTree.MaterialRow material) {
+                        if (button == 0) {
+                            this.expansion.toggle(material.entry().itemId(), material.entry().stack(), this.minecraft);
+                        } else {
+                            MaterialConfig.addIgnoredItem(material.entry().itemId().toString());
+                            // 立即刷新快照，忽略的物品马上从列表消失
+                            MaterialRefreshScheduler.getInstance().refreshNow();
+                        }
+                        return true;
                     }
-                    return true;
+                    // 直接材料行左键：继续展开它的直接合成材料（逐级下钻）
+                    if (button == 0 && row instanceof MaterialExpansionTree.IngredientRow ingredient) {
+                        this.expansion.toggle(BuiltInRegistries.ITEM.getKey(ingredient.entry().stack().getItem()),
+                                ingredient.entry().stack(), this.minecraft);
+                        return true;
+                    }
                 }
             }
         }
         return super.mouseClicked(mouseX, mouseY, button);
     }
 
-    /** 展开 / 收起一个材料条目的原材料明细 */
-    private void toggleExpanded(MaterialEntrySnapshot entry) {
-        if (entry.itemId().equals(this.expandedItemId)) {
-            this.expandedItemId = null;
-            this.expandedParts = List.of();
-            return;
-        }
-        Minecraft client = this.minecraft;
-        if (client != null && client.level != null) {
-            this.expandedParts = MaterialBreakdownCalculator.breakdownSingle(
-                    entry.stack(), entry.total(), client.level.getRecipeManager(), client.level.registryAccess());
-            this.expandedItemId = entry.itemId();
-        }
-    }
-
     /** 拖拽滑块滚动列表 */
     @Override
     public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
-        if (this.scrollbarDragging && this.cachedMaxScroll > 0) {
-            int sliderHeight = sliderHeight(this.cachedTrackHeight, this.cachedMaxScroll);
-            int movable = this.cachedTrackHeight - sliderHeight;
-            int target = (int) Math.round(
-                    (mouseY - this.dragGrabOffset - this.cachedTrackTop) * this.cachedMaxScroll / Math.max(1, movable));
-            this.scrollOffset = clampScroll(target, this.cachedMaxScroll);
+        if (this.scrollbar.mouseDragged(mouseY)) {
             return true;
         }
         return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
@@ -416,15 +391,11 @@ public final class MaterialListScreen extends Screen implements MaterialSnapshot
 
     @Override
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
-        this.scrollbarDragging = false;
+        this.scrollbar.mouseReleased();
         return super.mouseReleased(mouseX, mouseY, button);
     }
 
-    private static int clampScroll(int value, int maxScroll) {
-        return Math.max(0, Math.min(maxScroll, value));
-    }
-
-    /** 快照变化时重算原材料分解（惰性，仅在原材料视图下调用） */
+    /** 快照变化时重算直接材料分解（惰性，仅在直接材料视图下调用） */
     private void ensureBreakdown(MaterialListSnapshot snap) {
         if (this.breakdownSource == snap) {
             return;
@@ -495,8 +466,7 @@ public final class MaterialListScreen extends Screen implements MaterialSnapshot
         int listTop = MARGIN + HEADER_HEIGHT;
         int listBottom = this.height - FOOTER_HEIGHT;
         if (mouseY >= listTop && mouseY <= listBottom) {
-            this.scrollOffset = clampScroll(this.scrollOffset - (int) deltaY * ROW_HEIGHT,
-                    Math.max(0, this.cachedMaxScroll));
+            this.scrollbar.scrollBy(-(int) deltaY * ROW_HEIGHT);
             return true;
         }
         return super.mouseScrolled(mouseX, mouseY, deltaX, deltaY);

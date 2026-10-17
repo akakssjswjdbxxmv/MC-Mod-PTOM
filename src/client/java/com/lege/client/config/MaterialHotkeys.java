@@ -2,6 +2,8 @@ package com.lege.client.config;
 
 import com.lege.Temp1792221464;
 import com.lege.client.gui.MaterialListScreen;
+import com.lege.client.gui.SchematicBrowserScreen;
+import com.lege.client.material.MaterialSession;
 import fi.dy.masa.malilib.config.options.ConfigHotkey;
 import fi.dy.masa.malilib.event.InputEventHandler;
 import fi.dy.masa.malilib.hotkeys.IHotkey;
@@ -34,7 +36,10 @@ public final class MaterialHotkeys {
         OPEN_GUI.getKeybind().setCallback((action, key) -> {
             Minecraft client = Minecraft.getInstance();
             if (client.player != null && client.screen == null) {
-                client.setScreen(new MaterialListScreen());
+                // 已打开过投影文件则直达材料界面，否则先进入文件浏览器选择
+                client.setScreen(MaterialSession.getInstance().hasOpenFile()
+                        ? new MaterialListScreen()
+                        : new SchematicBrowserScreen());
                 return true;
             }
             return false;

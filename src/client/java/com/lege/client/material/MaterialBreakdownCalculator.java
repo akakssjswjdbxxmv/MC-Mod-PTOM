@@ -12,29 +12,26 @@ import net.minecraft.world.item.crafting.RecipeType;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 成品 → 合成原材料分解器。
- * 基于客户端配方管理器递归分解到不可再合成的基础材料，
- * 带环检测、深度限制与分解缓存。仅在客户端主线程调用。
+ * 成品 → 直接合成材料分解器。
+ * 基于客户端配方管理器只分解一层（配方的直接输入），不递归到最原始材料：
+ * 有配方的物品展开为其直接合成材料，无配方的物品视为其自身。
+ * 带分解缓存。仅在客户端主线程调用。
  */
 public final class MaterialBreakdownCalculator {
 
-    /** 单次分解最大递归深度，防御异常深的配方链 */
-    private static final int MAX_DEPTH = 16;
     /** double 累加误差容差 */
     private static final double EPSILON = 1e-6;
 
-    /** 原材料聚合条目：代表物品栈（count=1）与总需求量 */
+    /** 直接材料聚合条目：代表物品栈（count=1）与总需求量 */
     public record BreakdownEntry(ItemStack stack, long totalRequired) {
     }
 
-    /** 每 1 个物品所需叶子原材料的配比分量 */
+    /** 每 1 个物品所需直接合成材料的配比分量 */
     private record BreakdownPart(Item item, double amount) {
     }
 
@@ -45,14 +42,14 @@ public final class MaterialBreakdownCalculator {
     private MaterialBreakdownCalculator() {
     }
 
-    /** 将材料列表快照分解为原材料汇总，按总需求降序 */
+    /** 将材料列表快照分解为直接合成材料汇总，按总需求降序 */
     public static List<BreakdownEntry> calculate(MaterialListSnapshot snapshot,
                                                  RecipeManager recipes, RegistryAccess access) {
         Map<Item, RecipeHolder<CraftingRecipe>> index = recipeIndex(recipes, access);
         Map<Item, Double> totals = new HashMap<>();
 
         for (MaterialEntrySnapshot entry : snapshot.entries()) {
-            for (BreakdownPart part : leavesOf(entry.stack().getItem(), index, access, new HashSet<>(), 0)) {
+            for (BreakdownPart part : directPartsOf(entry.stack().getItem(), index, access)) {
                 totals.merge(part.item(), part.amount() * entry.total(), Double::sum);
             }
         }
@@ -60,12 +57,12 @@ public final class MaterialBreakdownCalculator {
         return toEntries(totals);
     }
 
-    /** 分解单个物品所需原材料（按需求量 total 取整），供列表点击展开使用 */
+    /** 分解单个物品所需直接合成材料（按需求量 total 取整），供列表点击展开使用 */
     public static List<BreakdownEntry> breakdownSingle(ItemStack stack, long total,
                                                        RecipeManager recipes, RegistryAccess access) {
         Map<Item, RecipeHolder<CraftingRecipe>> index = recipeIndex(recipes, access);
         Map<Item, Double> totals = new HashMap<>();
-        for (BreakdownPart part : leavesOf(stack.getItem(), index, access, new HashSet<>(), 0)) {
+        for (BreakdownPart part : directPartsOf(stack.getItem(), index, access)) {
             totals.merge(part.item(), part.amount() * total, Double::sum);
         }
         return toEntries(totals);
@@ -104,41 +101,35 @@ public final class MaterialBreakdownCalculator {
         return recipeIndex;
     }
 
-    /** 每 1 个物品展开到叶子原材料；无配方 / 成环 / 超深则视为叶子 */
-    private static List<BreakdownPart> leavesOf(Item item,
-                                                Map<Item, RecipeHolder<CraftingRecipe>> index,
-                                                RegistryAccess access, Set<Item> visiting, int depth) {
+    /** 每 1 个物品的直接合成材料配比；无配方则为其自身 */
+    private static List<BreakdownPart> directPartsOf(Item item,
+                                                     Map<Item, RecipeHolder<CraftingRecipe>> index,
+                                                     RegistryAccess access) {
         List<BreakdownPart> cached = BREAKDOWN_CACHE.get(item);
         if (cached != null) {
             return cached;
         }
         RecipeHolder<CraftingRecipe> holder = index.get(item);
-        if (holder == null || depth >= MAX_DEPTH || !visiting.add(item)) {
+        if (holder == null) {
             return List.of(new BreakdownPart(item, 1.0));
         }
-        try {
-            CraftingRecipe recipe = holder.value();
-            long resultCount = Math.max(1, recipe.getResultItem(access).getCount());
+        CraftingRecipe recipe = holder.value();
+        long resultCount = Math.max(1, recipe.getResultItem(access).getCount());
 
-            Map<Item, Double> parts = new HashMap<>();
-            for (Ingredient ingredient : recipe.getIngredients()) {
-                ItemStack[] candidates = ingredient.getItems();
-                if (candidates.length == 0) {
-                    continue;
-                }
-                // 标签多候选取首个作为代表（净需求口径）
-                for (BreakdownPart child : leavesOf(candidates[0].getItem(), index, access, visiting, depth + 1)) {
-                    parts.merge(child.item(), child.amount() / resultCount, Double::sum);
-                }
+        Map<Item, Double> parts = new HashMap<>();
+        for (Ingredient ingredient : recipe.getIngredients()) {
+            ItemStack[] candidates = ingredient.getItems();
+            if (candidates.length == 0) {
+                continue;
             }
-            List<BreakdownPart> list = new ArrayList<>(parts.size());
-            for (Map.Entry<Item, Double> e : parts.entrySet()) {
-                list.add(new BreakdownPart(e.getKey(), e.getValue()));
-            }
-            BREAKDOWN_CACHE.put(item, List.copyOf(list));
-            return list;
-        } finally {
-            visiting.remove(item);
+            // 每个原料槽需求 1 个，按产出数量折算；标签多候选取首个作为代表（净需求口径）
+            parts.merge(candidates[0].getItem(), 1.0 / resultCount, Double::sum);
         }
+        List<BreakdownPart> list = new ArrayList<>(parts.size());
+        for (Map.Entry<Item, Double> e : parts.entrySet()) {
+            list.add(new BreakdownPart(e.getKey(), e.getValue()));
+        }
+        BREAKDOWN_CACHE.put(item, List.copyOf(list));
+        return list;
     }
 }
