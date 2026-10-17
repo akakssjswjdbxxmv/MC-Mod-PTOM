@@ -38,3 +38,9 @@ hs_err_*.log
 replay_*.log
 *.hprof
 *.jfr
+
+# project docs
+docs/
+
+# sourcecode reference
+sourcecode/
