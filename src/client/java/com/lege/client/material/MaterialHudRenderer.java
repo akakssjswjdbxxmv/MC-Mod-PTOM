@@ -74,21 +74,17 @@ public final class MaterialHudRenderer implements HudRenderCallback {
         graphics.drawString(Minecraft.getInstance().font, progressLine, x, y, 0xFFFFFF, false);
         y += LINE_HEIGHT;
 
-        // 背包缺口汇总
-        if (stats.countMissingInBag() > 0) {
-            String missingLine = String.format("背包缺口: %d 件", stats.countMissingInBag());
-            graphics.drawString(Minecraft.getInstance().font, missingLine, x, y, 0xFF8888, false);
-            y += LINE_HEIGHT;
-        }
-
-        // Top N 紧缺材料
+        // Top N 紧缺材料（按建造缺失排序），数量按当前计数模式显示
+        var mode = MaterialConfig.getDisplayMode();
         for (MaterialEntrySnapshot entry : stats.topMissing()) {
-            int bagMissing = Math.max(0, entry.missing() - entry.available());
-            if (bagMissing <= 0) {
+            if (entry.missing() <= 0) {
                 continue;
             }
             String itemName = entry.stack().getHoverName().getString();
-            String line = String.format("  %s x%d", itemName, bagMissing);
+            String count = mode == MaterialConfig.CountMode.INDIVIDUAL
+                    ? "x" + entry.missing()
+                    : MaterialCountFormatter.format(entry.missing(), mode, entry.stack().getMaxStackSize());
+            String line = String.format("  %s %s", itemName, count);
             graphics.drawString(Minecraft.getInstance().font, line, x, y, 0xFFAA55, false);
             y += LINE_HEIGHT;
         }

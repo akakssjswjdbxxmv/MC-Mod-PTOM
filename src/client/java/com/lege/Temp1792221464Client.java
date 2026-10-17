@@ -1,23 +1,19 @@
 package com.lege;
 
 import com.lege.client.config.MaterialConfig;
-import com.lege.client.gui.MaterialListScreen;
+import com.lege.client.config.MaterialConfigGui;
+import com.lege.client.config.MaterialHotkeys;
 import com.lege.client.material.MaterialHudRenderer;
 import com.lege.client.material.MaterialRefreshScheduler;
+import fi.dy.masa.malilib.event.InitializationHandler;
+import fi.dy.masa.malilib.registry.Registry;
+import fi.dy.masa.malilib.util.data.ModInfo;
 import net.fabricmc.api.ClientModInitializer;
-import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
-import net.minecraft.client.KeyMapping;
-import net.minecraft.client.Minecraft;
-import org.lwjgl.glfw.GLFW;
 
 public class Temp1792221464Client implements ClientModInitializer {
 
-	private static final String KEY_CATEGORY = "key.categories.temp1792221464";
-
-	/** 打开模组主界面的快捷键（默认 H，可在控制设置中修改） */
-	private static final KeyMapping OPEN_MENU = KeyBindingHelper.registerKeyBinding(
-			new KeyMapping("key.temp1792221464.open_menu", GLFW.GLFW_KEY_H, KEY_CATEGORY));
+	/** malilib 配置列表中显示的模组名 */
+	private static final String MOD_NAME = "Material Assistant";
 
 	@Override
 	public void onInitializeClient() {
@@ -26,13 +22,12 @@ public class Temp1792221464Client implements ClientModInitializer {
 		MaterialRefreshScheduler.getInstance().initialize();
 		// 注册材料统计 HUD 渲染器
 		MaterialHudRenderer.getInstance().register();
+		// 快捷键走 malilib 输入体系（可在 malilib 配置界面编辑键位）
+		MaterialHotkeys.init();
 
-		ClientTickEvents.END_CLIENT_TICK.register(client -> {
-			while (OPEN_MENU.consumeClick()) {
-				if (client.player != null && client.screen == null) {
-					client.setScreen(new MaterialListScreen());
-				}
-			}
-		});
+		// 注册到 malilib 配置界面列表（malilib 游戏初始化完成后统一回调）
+		InitializationHandler.getInstance().registerInitializationHandler(() ->
+				Registry.CONFIG_SCREEN.registerConfigScreenFactory(
+						new ModInfo(Temp1792221464.MOD_ID, MOD_NAME, MaterialConfigGui::new)));
 	}
 }

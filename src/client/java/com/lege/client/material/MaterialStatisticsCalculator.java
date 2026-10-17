@@ -27,29 +27,21 @@ public final class MaterialStatisticsCalculator {
 
         long countTotal = 0;
         long countAvailable = 0;
-        long countMissingInBag = 0;
 
-        // 收集有缺口的条目（bagMissing > 0）
+        // 收集建造缺失的条目（missing > 0）
         List<MaterialEntrySnapshot> missingEntries = new ArrayList<>();
 
         for (MaterialEntrySnapshot entry : snapshot.entries()) {
-            int total = entry.total();
-            int available = entry.available();
-            int missing = entry.missing();
+            countTotal += entry.total();
+            countAvailable += entry.available();
 
-            countTotal += total;
-            countAvailable += available;
-
-            // 背包缺口：建造还缺的数量 - 背包已有的数量，下限为 0
-            int bagMissing = Math.max(0, missing - available);
-            if (bagMissing > 0) {
-                countMissingInBag += bagMissing;
+            if (entry.missing() > 0) {
                 missingEntries.add(entry);
             }
         }
 
-        // 按背包缺口降序排序，取 Top N
-        missingEntries.sort(Comparator.comparingInt(MaterialStatisticsCalculator::bagMissing).reversed());
+        // 按建造缺失降序排序，取 Top N
+        missingEntries.sort(Comparator.comparingInt(MaterialEntrySnapshot::missing).reversed());
         List<MaterialEntrySnapshot> topMissing = missingEntries.size() > topN
                 ? List.copyOf(missingEntries.subList(0, topN))
                 : List.copyOf(missingEntries);
@@ -59,16 +51,10 @@ public final class MaterialStatisticsCalculator {
         return new MaterialStatistics(
                 countTotal,
                 countAvailable,
-                countMissingInBag,
                 snapshot.countMissing(),
                 progressPercent,
                 topMissing,
                 snapshot.timestampMillis()
         );
-    }
-
-    /** 计算单条的背包缺口（用于排序比较） */
-    private static int bagMissing(MaterialEntrySnapshot entry) {
-        return Math.max(0, entry.missing() - entry.available());
     }
 }

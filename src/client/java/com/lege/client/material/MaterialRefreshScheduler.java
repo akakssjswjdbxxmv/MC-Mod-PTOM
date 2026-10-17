@@ -85,6 +85,15 @@ public final class MaterialRefreshScheduler {
         }
     }
 
+    /** 立即刷新一次并推送（主线程调用，供忽略列表等配置变更后即时生效） */
+    public void refreshNow() {
+        try {
+            refresh();
+        } catch (Exception e) {
+            Temp1792221464.LOGGER.error("材料列表立即刷新失败", e);
+        }
+    }
+
     private void refresh() {
         MaterialListBase materialList = DataManager.getMaterialList();
         Player player = Minecraft.getInstance().player;

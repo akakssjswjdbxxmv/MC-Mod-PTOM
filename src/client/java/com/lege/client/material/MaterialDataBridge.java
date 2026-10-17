@@ -1,5 +1,6 @@
 package com.lege.client.material;
 
+import com.lege.client.config.MaterialConfig;
 import fi.dy.masa.litematica.data.DataManager;
 import fi.dy.masa.litematica.data.SchematicHolder;
 import fi.dy.masa.litematica.materials.MaterialListBase;
@@ -9,6 +10,7 @@ import fi.dy.masa.litematica.materials.MaterialListSchematic;
 import fi.dy.masa.litematica.schematic.LitematicaSchematic;
 import fi.dy.masa.litematica.schematic.placement.SchematicPlacement;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
 
 import java.util.ArrayList;
@@ -35,8 +37,13 @@ public final class MaterialDataBridge {
         for (MaterialListEntry entry : materialList.getMaterialsAll()) {
             // 拷贝 ItemStack，防止 litematica 复用内部对象导致数据被改写
             ItemStack stack = entry.getStack().copy();
+            ResourceLocation itemId = BuiltInRegistries.ITEM.getKey(stack.getItem());
+            // 忽略列表统一在快照层过滤，统计 / 列表 / 原材料视图自动生效
+            if (MaterialConfig.isIgnored(itemId.toString())) {
+                continue;
+            }
             entries.add(new MaterialEntrySnapshot(
-                    BuiltInRegistries.ITEM.getKey(stack.getItem()),
+                    itemId,
                     stack,
                     entry.getCountTotal(),
                     entry.getCountAvailable(),
