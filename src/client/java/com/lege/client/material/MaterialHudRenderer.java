@@ -1,5 +1,6 @@
 package com.lege.client.material;
 
+import com.lege.client.config.MaterialConfig;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
@@ -12,11 +13,26 @@ import net.minecraft.client.DeltaTracker;
  */
 public final class MaterialHudRenderer implements HudRenderCallback {
 
+    private static final MaterialHudRenderer INSTANCE = new MaterialHudRenderer();
+
     private static final int MARGIN = 4;
     private static final int LINE_HEIGHT = 10;
-    private static final int TOP_MISSING_LIMIT = 5;
 
     private volatile MaterialListSnapshot currentSnapshot;
+    /** 主界面打开时抑制 HUD，避免与界面统计重复且被界面模糊层糊住 */
+    private volatile boolean suppressed;
+
+    public static MaterialHudRenderer getInstance() {
+        return INSTANCE;
+    }
+
+    private MaterialHudRenderer() {
+    }
+
+    /** 设置渲染抑制（主界面生命周期调用） */
+    public void setSuppressed(boolean suppressed) {
+        this.suppressed = suppressed;
+    }
 
     /** 注册到 Fabric HUD 渲染回调，并订阅刷新调度器 */
     public void register() {
@@ -26,12 +42,16 @@ public final class MaterialHudRenderer implements HudRenderCallback {
 
     @Override
     public void onHudRender(GuiGraphics graphics, DeltaTracker tickDelta) {
+        if (this.suppressed || !MaterialConfig.isHudEnabled()) {
+            return;
+        }
+
         MaterialListSnapshot snapshot = this.currentSnapshot;
         if (snapshot == null || !snapshot.hasMaterialList()) {
             return;
         }
 
-        MaterialStatistics stats = MaterialStatisticsCalculator.calculate(snapshot, TOP_MISSING_LIMIT);
+        MaterialStatistics stats = MaterialStatisticsCalculator.calculate(snapshot, MaterialConfig.getHudTopN());
         if (stats.countTotal() == 0) {
             return;
         }

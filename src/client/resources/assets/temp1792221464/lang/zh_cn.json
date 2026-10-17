@@ -1,0 +1,16 @@
+{
+  "key.categories.temp1792221464": "材料助手",
+  "key.temp1792221464.open_menu": "打开材料列表界面",
+  "gui.temp1792221464.material_list.title": "材料助手",
+  "gui.temp1792221464.material_list.no_list": "未检测到材料列表，请先在 Litematica 中打开一个材料列表。",
+  "gui.temp1792221464.material_list.progress": "进度",
+  "gui.temp1792221464.material_list.bag_missing": "背包缺口",
+  "gui.temp1792221464.material_list.hud_toggle": "HUD 显示: %s",
+  "gui.temp1792221464.material_list.hud_top_n": "HUD 条数",
+  "gui.temp1792221464.material_list.header_name": "物品",
+  "gui.temp1792221464.material_list.header_total": "需求",
+  "gui.temp1792221464.material_list.header_available": "已有",
+  "gui.temp1792221464.material_list.header_missing": "缺口",
+  "gui.temp1792221464.common.on": "开",
+  "gui.temp1792221464.common.off": "关"
+}

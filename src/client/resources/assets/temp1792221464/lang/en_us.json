@@ -1,0 +1,16 @@
+{
+  "key.categories.temp1792221464": "Material Assistant",
+  "key.temp1792221464.open_menu": "Open Material List Menu",
+  "gui.temp1792221464.material_list.title": "Material Assistant",
+  "gui.temp1792221464.material_list.no_list": "No material list detected. Open one in Litematica first.",
+  "gui.temp1792221464.material_list.progress": "Progress",
+  "gui.temp1792221464.material_list.bag_missing": "Bag shortage",
+  "gui.temp1792221464.material_list.hud_toggle": "HUD Display: %s",
+  "gui.temp1792221464.material_list.hud_top_n": "HUD Top N",
+  "gui.temp1792221464.material_list.header_name": "Item",
+  "gui.temp1792221464.material_list.header_total": "Required",
+  "gui.temp1792221464.material_list.header_available": "Owned",
+  "gui.temp1792221464.material_list.header_missing": "Shortage",
+  "gui.temp1792221464.common.on": "ON",
+  "gui.temp1792221464.common.off": "OFF"
+}
